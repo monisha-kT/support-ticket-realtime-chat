@@ -1,0 +1,7 @@
+Flask==2.2.2
+Flask-SQLAlchemy==3.0.2
+Flask-SocketIO==5.3.2
+flasgger==0.9.5
+flask-cors==3.0.10
+werkzeug==2.2.2
+psycopg2-binary==2.9.5
