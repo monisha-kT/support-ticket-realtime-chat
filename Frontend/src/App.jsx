@@ -7,7 +7,7 @@ import AuthPage from './Components/AuthForm';
 import ChatWindow from './Components/ChatWindow';
 import Navbar from './Components/Navbar';
 import ProtectedRoute from './Components/ProtectedRoute';
-
+import UserChat from './Components/UserChat';
 
 function App() {
   return (
@@ -35,7 +35,7 @@ function App() {
         <Route path="*" element={<Navigate to="/auth" replace />} />
 
         {/* Protected Chat Routes */}
-        <Route path="/user/chat" element={
+        {/* <Route path="/user/chat" element={
           <ProtectedRoute 
             element={
               <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -47,7 +47,8 @@ function App() {
             } 
             allowedRoles={['user']} 
           />
-        } />
+        } /> */}
+        <Route path="/user/chat" element={<UserChat />} />
       </Routes>
     </Router>
   );

@@ -13,7 +13,7 @@ import SendIcon from '@mui/icons-material/Send';
 import useStore from '../store/useStore';
 import { getSocket, useSocket } from './socket';
 
-function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
+function ChatWindow({ ticketId, readOnly = false, initialMessages = [], inactivityTimeout = 0 }) {
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState(initialMessages);
   const [loading, setLoading] = useState(Boolean(ticketId && !initialMessages.length));
@@ -23,6 +23,7 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
   const socketRef = useRef(null);
   const user = useStore((state) => state.user);
   const { isConnected, error: socketError } = useSocket();
+  const inactivityTimerRef = useRef(null);
 
   // Fetch ticket status
   useEffect(() => {
@@ -47,57 +48,94 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
     }
   }, [ticketId, readOnly]);
 
-  // Socket connection and message handling
+  // Handle inactivity timeout
   useEffect(() => {
-    if (!readOnly && ticketId && ticketId !== 'null') {
-      const initializeChat = async () => {
-        try {
-          // Initialize socket connection
-          socketRef.current = getSocket();
-          if (!socketRef.current) {
-            throw new Error('Failed to initialize socket connection');
-          }
-
-          // Join chat room
-          socketRef.current.emit('join', { ticket_id: ticketId });
-
-          // Load existing messages if not provided
-          if (!initialMessages.length) {
-            await fetchMessages();
-          }
-
-          // Listen for new messages
-          socketRef.current.on('message', (newMessage) => {
-            setMessages(prev => [...prev, newMessage]);
-          });
-
-          // Listen for room join confirmation
-          socketRef.current.on('joined', (data) => {
-            console.log('Joined chat room:', data.room);
-          });
-
-          // Listen for ticket status changes
-          socketRef.current.on('ticket_closed', () => {
-            setTicketStatus('closed');
-          });
-
-        } catch (err) {
-          setError(err.message);
-        } finally {
-          setLoading(false);
+    if (inactivityTimeout && !readOnly && ticketId && ticketStatus !== 'closed') {
+      const resetTimer = () => {
+        if (inactivityTimerRef.current) {
+          clearTimeout(inactivityTimerRef.current);
         }
+        inactivityTimerRef.current = setTimeout(() => {
+          if (socketRef.current) {
+            socketRef.current.emit('inactivity_timeout', { ticket_id: ticketId });
+          }
+        }, inactivityTimeout);
       };
 
-      initializeChat();
+      resetTimer();
+
+      const handleActivity = () => resetTimer();
+      window.addEventListener('keydown', handleActivity);
+      window.addEventListener('mousemove', handleActivity);
+
+      return () => {
+        if (inactivityTimerRef.current) {
+          clearTimeout(inactivityTimerRef.current);
+        }
+        window.removeEventListener('keydown', handleActivity);
+        window.removeEventListener('mousemove', handleActivity);
+      };
+    }
+  }, [inactivityTimeout, ticketId, readOnly, ticketStatus]);
+
+  // Socket connection and listeners
+  useEffect(() => {
+    if (!readOnly && ticketId && ticketId !== 'null') {
+      socketRef.current = getSocket();
+
+      if (!socketRef.current) {
+        setError('Failed to initialize chat connection');
+        return;
+      }
+
+      socketRef.current.on('message', (newMessage) => {
+        setMessages(prev => [...prev, newMessage]);
+      });
+
+      socketRef.current.on('ticket_closed', ({ reason, reassigned_to }) => {
+        setTicketStatus('closed');
+        setMessages(prev => [
+          ...prev,
+          {
+            ticket_id: ticketId,
+            sender_id: null,
+            message: `Ticket closed. Reason: ${reason}${reassigned_to ? `. Reassigned to member ID ${reassigned_to}` : ''}`,
+            timestamp: new Date().toISOString(),
+            is_system: true
+          }
+        ]);
+      });
+
+      socketRef.current.on('ticket_reopened', () => {
+        setTicketStatus('assigned');
+      });
+
+      socketRef.current.emit('join', { ticket_id: ticketId });
+
+      socketRef.current.on('message_sent', (data) => {
+        if (data.success) {
+          setMessages(prev => [...prev, {
+            ticket_id: ticketId,
+            sender_id: user.id,
+            message: data.message,
+            timestamp: data.timestamp
+          }]);
+        }
+      });
+
+      setLoading(false);
     }
 
     return () => {
       if (socketRef.current) {
         socketRef.current.off('message');
         socketRef.current.off('joined');
+        socketRef.current.off('message_sent');
+        socketRef.current.off('ticket_closed');
+        socketRef.current.off('ticket_reopened');
       }
     };
-  }, [ticketId]);
+  }, [ticketId, readOnly, user.id]);
 
   // Fetch message history
   const fetchMessages = async () => {
@@ -113,7 +151,7 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
       const data = await response.json();
       setMessages(data);
     } catch (error) {
-      throw new Error('Error loading messages: ' + error.message);
+      setError('Error loading messages: ' + error.message);
     }
   };
 
@@ -123,16 +161,20 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
   }, [messages]);
 
   // Handle message sending
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!message.trim() || !socketRef.current || !isConnected || ticketStatus === 'closed') return;
 
-    socketRef.current.emit('message', {
-      ticket_id: ticketId,
-      sender_id: user.id,
-      message: message.trim()
-    });
+    try {
+      socketRef.current.emit('message', {
+        ticket_id: ticketId,
+        sender_id: user.id,
+        message: message.trim()
+      });
 
-    setMessage('');
+      setMessage('');
+    } catch (err) {
+      setError('Failed to send message');
+    }
   };
 
   const handleKeyPress = (e) => {
@@ -164,7 +206,6 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Connection Status */}
       {!isConnected && (
         <Box sx={{ width: '100%' }}>
           <LinearProgress />
@@ -182,7 +223,6 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
         </Box>
       )}
 
-      {/* Messages Area */}
       <Box sx={{ 
         flex: 1, 
         p: 2, 
@@ -199,8 +239,8 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
             sx={{
               p: 1.5,
               maxWidth: '70%',
-              alignSelf: msg.sender_id === user.id ? 'flex-end' : 'flex-start',
-              bgcolor: msg.sender_id === user.id ? '#e3f2fd' : 'white',
+              alignSelf: msg.is_system ? 'center' : msg.sender_id === user.id ? 'flex-end' : 'flex-start',
+              bgcolor: msg.is_system ? '#fff3e0' : msg.sender_id === user.id ? '#e3f2fd' : 'white',
               borderRadius: 2,
               position: 'relative'
             }}
@@ -222,7 +262,6 @@ function ChatWindow({ ticketId, readOnly = false, initialMessages = [] }) {
         <div ref={messagesEndRef} />
       </Box>
 
-      {/* Message Input - Only show if not readOnly */}
       {!readOnly && (
         <Box sx={{ 
           p: 2, 
